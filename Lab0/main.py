@@ -1,35 +1,35 @@
 import torch
 import torchvision
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
 import torchvision.transforms as transforms
 
-# 数据规范化变换
-transform = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-])
 
-# 加载训练集和测试集
-trainset = torchvision.datasets.CIFAR10(
-    root='./data', train=True, download=True, transform=transform
-)
-trainloader = torch.utils.data.DataLoader(
-    trainset, batch_size=4, shuffle=True, num_workers=2
-)
+def load_cifar(data_path: str):
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    ])
 
-testset = torchvision.datasets.CIFAR10(
-    root='./data', train=False, download=True, transform=transform
-)
-testloader = torch.utils.data.DataLoader(
-    testset, batch_size=4, shuffle=False, num_workers=2
-)
+    train_set = torchvision.datasets.CIFAR10(
+        root=data_path, train=True, download=True, transform=transform
+    )
+    train_loader = torch.utils.data.DataLoader(
+        train_set, batch_size=4, shuffle=True, num_workers=2
+    )
 
-# 类别标签
-classes = ('plane', 'car', 'bird', 'cat', 'deer',
-           'dog', 'frog', 'horse', 'ship', 'truck')
+    test_set = torchvision.datasets.CIFAR10(
+        root=data_path, train=False, download=True, transform=transform
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_set, batch_size=4, shuffle=False, num_workers=2
+    )
 
-
-import torch.nn as nn
-import torch.nn.functional as F
+    classes = ('plane', 'car', 'bird', 'cat', 'deer',
+               'dog', 'frog', 'horse', 'ship', 'truck')
+    
+    return train_loader, test_loader, classes
 
 
 class MyNet(nn.Module):
@@ -51,79 +51,70 @@ class MyNet(nn.Module):
         x = self.fc3(x)
         return x
 
-# 检查网络结构
-mynet = MyNet()
-print(mynet)
+
+def train(model, train_loader, n_epochs, n_batches):
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    for epoch in range(n_epochs):
+        running_loss = 0.0
+        for i, data in enumerate(train_loader):
+            inputs, labels = data[0].to(device), data[1].to(device)
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+
+            running_loss += loss.item()
+            if (i+1) % n_batches == 0:
+                print(f'everage running loss: {running_loss/n_batches:4f}')
+                running_loss = 0.0
+
+    print("训练完成")
+    torch.save(model.state_dict(), "cifar_net.pth")
 
 
-import torch.optim as optim
+def evaluate(model, test_loader, classes):
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    model.eval()
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for data in test_loader:
+            images, labels = data[0].to(device), data[1].to(device)
+            outputs = model(images)
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
 
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.SGD(mynet.parameters(), lr=0.001, momentum=0.9)
+    print(f"测试集准确率: {100 * correct / total:.1f}%")
 
+    class_correct = [0] * 10
+    class_total = [0] * 10
 
-from tqdm.notebook import tqdm
+    with torch.no_grad():
+        for data in test_loader:
+            images, labels = data[0].to(device), data[1].to(device)
+            outputs = model(images)
+            _, predicted = torch.max(outputs, 1)
+            c = (predicted == labels).squeeze()
+            for i in range(len(labels)):
+                label = labels[i]
+                class_correct[label] += c[i].item()
+                class_total[label] += 1
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-mynet.to(device)  # 提前添加GPU支持（任务7）
-
-n_epochs = 2
-n_batches = 100
-
-pbar = tqdm(total=n_epochs, desc="Training")
-
-for epoch in range(n_epochs):
-    running_loss = 0.0
-    for i, data in enumerate(trainloader, 0):
-        inputs, labels = data[0].to(device), data[1].to(device)  # 数据移至GPU
-        optimizer.zero_grad()
-        outputs = mynet(inputs)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-
-        running_loss += loss.item()
-        if (i+1) % n_batches == 0:
-            pbar.set_postfix(batch=i+1, loss=running_loss/n_batches)
-            running_loss = 0.0
-    pbar.update()
-
-print("训练完成")
-torch.save(mynet.state_dict(), "cifar_net.pth")
+    for i in range(10):
+        print(f"{classes[i]}的准确率: {100 * class_correct[i]/class_total[i]:.1f}%")
 
 
-mynet.load_state_dict(torch.load("cifar_net.pth"))
-mynet.eval()
-
-correct = 0
-total = 0
-with torch.no_grad():
-    for data in testloader:
-        images, labels = data[0].to(device), data[1].to(device)
-        outputs = mynet(images)
-        _, predicted = torch.max(outputs.data, 1)
-        total += labels.size(0)
-        correct += (predicted == labels).sum().item()
-
-print(f"测试集准确率: {100 * correct / total:.1f}%")
+def main():
+    train_loader, test_loader, classes = load_cifar(data_path = './dataset')
+    mynet = MyNet().to('cuda')
+    train(mynet, train_loader, 2, 100)
+    evaluate(mynet, test_loader, classes)
 
 
-class_correct = [0] * 10
-class_total = [0] * 10
-
-with torch.no_grad():
-    for data in testloader:
-        images, labels = data[0].to(device), data[1].to(device)
-        outputs = mynet(images)
-        _, predicted = torch.max(outputs, 1)
-        c = (predicted == labels).squeeze()
-        for i in range(len(labels)):
-            label = labels[i]
-            class_correct[label] += c[i].item()
-            class_total[label] += 1
-
-for i in range(10):
-    print(f"{classes[i]}的准确率: {100 * class_correct[i]/class_total[i]:.1f}%")
-
-
-
+if __name__ == '__main__':
+    main()
